@@ -13,36 +13,50 @@ CyberPulse monitors threat intelligence feeds, correlates them with real-time se
 ## Architecture
 
 ```
-Threat Feeds (MISP, CERT, ENISA)     Search Demand (Google Trends API, DataForSEO)
-              │                                        │
-              ▼                                        ▼
-     ┌─────────────────────────────────────────────────────┐
-     │              CyberPulse Correlation Engine           │
-     │                                                     │
-     │  1. Detect threat event (trigger)                   │
-     │  2. Classify: severity, region, industry            │
-     │  3. Pull search demand signals (validation)         │
-     │  4. Aggregate news + social signals                 │
-     │  5. Generate campaign brief via LLM                 │
-     └─────────────────────────────────────────────────────┘
-              │                    │                    │
-              ▼                    ▼                    ▼
-      Campaign Brief        Channel Plan         Pipeline Estimate
-   (audience, messaging,   (LinkedIn, email,    (expected leads, CPL,
-    compliance angle)       SDR, webinar)        influenced revenue)
+┌──────────────────────────────────────────────────────────────┐
+│                    THREAT INTELLIGENCE LAYER                  │
+│  AlienVault OTX │ MITRE ATT&CK │ ENISA │ National CERTs     │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    CORRELATION ENGINE                         │
+│  Threat Events ──► Search Demand ──► News Velocity ──► Brief │
+│                    (keyword model)    (RSS feeds)             │
+└──────────────────────┬───────────────────────────────────────┘
+                       │
+              ┌────────┴────────┐
+              ▼                 ▼
+┌─────────────────┐  ┌─────────────────────────┐
+│ Campaign         │  │ Live Feed               │
+│ Scenarios        │  │ Real-time threats,       │
+│ (curated briefs) │  │ search signals, news     │
+└─────────────────┘  └─────────────────────────┘
 ```
+
+## Two Views
+
+### Campaign Scenarios (curated)
+Pre-analyzed threat events with full campaign briefs: audience targeting, messaging frameworks, channel execution plans with budget/CPL/expected leads, and pipeline estimates.
+
+Three curated scenarios:
+1. **LockBit 4.0** — ransomware targeting DACH manufacturing
+2. **NIS2 Enforcement** — EU Commission infringement proceedings
+3. **Volt Typhoon** — Chinese APT in EU energy infrastructure
+
+### Live Feed (real-time)
+Pulls from live APIs:
+- **Threats**: AlienVault OTX public pulse feed (auto-classified by severity, category, region, industry)
+- **Search Demand**: Keyword correlation model mapping threat tags to search volume spikes
+- **News**: RSS feeds from BleepingComputer, The Hacker News, Dark Reading, SecurityWeek, Krebs on Security (sentiment-scored, relevance-ranked)
 
 ## Data Sources
 
-| Source | Purpose | API |
-|--------|---------|-----|
-| MISP / OpenCTI | Threat event detection (trigger) | MISP REST API |
-| ENISA / CERT advisories | EU-specific threat context | RSS / scraper |
-| Google Trends | Search demand spike validation | Google Trends API (alpha) |
-| DataForSEO | Keyword volume, SERP data | DataForSEO API |
-| NewsAPI / GDELT | News velocity measurement | REST API |
-| LinkedIn / Twitter | Social signal aggregation | API / scraper |
-| OpenAI / Claude | Campaign brief generation | LLM API |
+| Source | Type | Auth | Rate Limit |
+|--------|------|------|------------|
+| AlienVault OTX | Threat intel | None (public) | ~1000/day |
+| Cybersecurity RSS | News | None | Cached 30min |
+| Keyword Model | Search demand | None | In-memory |
 
 ## Key Design Decision
 
@@ -61,24 +75,40 @@ Each brief includes:
 
 ## Tech Stack
 
-- **Frontend**: Next.js 14 + React + Tailwind CSS
-- **Backend**: Next.js API routes + Python (FastAPI) for data processing
-- **Database**: PostgreSQL (Supabase) for threat events + campaign history
-- **LLM**: Claude API for campaign brief generation
-- **Data**: DataForSEO (search volumes), MISP (threat feeds), Google Trends API
+- **Framework**: Next.js 14 (App Router)
+- **Language**: TypeScript
+- **Styling**: Tailwind CSS
+- **Charts**: Recharts
+- **Icons**: Lucide React
+- **APIs**: Next.js Route Handlers (serverless)
 - **Deployment**: Vercel
 
-## Project Status
+## Getting Started
 
-**Phase**: Concept prototype (interactive demo with curated data)
+```bash
+npm install
+npm run dev
+```
 
-**Roadmap**:
+Open [http://localhost:3000](http://localhost:3000).
+
+## Deploy
+
+```bash
+npx vercel --yes
+```
+
+## Roadmap
+
 - [x] Interactive prototype with 3 curated threat scenarios
-- [ ] Connect to live Google Trends API for real-time search demand
-- [ ] Connect to MISP/OpenCTI for threat event ingestion
-- [ ] LLM-powered campaign brief generation (replace curated briefs)
-- [ ] HubSpot integration for direct campaign execution
-- [ ] Historical analysis: backtest past threat events against pipeline data
+- [x] Live threat feed (AlienVault OTX)
+- [x] Real-time news monitoring (RSS aggregation)
+- [x] Search demand correlation model
+- [ ] Anthropic Claude API for automated campaign brief generation from live threats
+- [ ] Google Trends API integration for real search demand data
+- [ ] Slack/email webhook for threat alert notifications
+- [ ] CRM integration (HubSpot/Salesforce) for pipeline tracking
+- [ ] Historical demand correlation database
 
 ## Origin
 
