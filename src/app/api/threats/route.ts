@@ -1,33 +1,23 @@
 import { NextResponse } from 'next/server'
-
-// ─── AlienVault OTX — Free Threat Intelligence Feed ──────────────
-// No API key needed for public pulses. Rate limited but sufficient for demo.
+import { upsertThreats, getRecentThreats } from '@/db/queries'
+import { triggerNotifications } from '@/lib/notifications'
 
 const OTX_BASE = 'https://otx.alienvault.com/api/v1'
 
-// Map OTX adversary info to our severity levels
 function classifySeverity(pulse: any): 'critical' | 'high' | 'medium' | 'low' {
   const tags = (pulse.tags || []).map((t: string) => t.toLowerCase())
   const name = (pulse.name || '').toLowerCase()
-
   if (tags.some((t: string) => ['apt', 'ransomware', 'critical', 'zero-day', 'nation-state'].includes(t)) ||
-      name.includes('ransomware') || name.includes('apt') || name.includes('zero-day')) {
-    return 'critical'
-  }
+      name.includes('ransomware') || name.includes('apt') || name.includes('zero-day')) return 'critical'
   if (tags.some((t: string) => ['malware', 'exploit', 'vulnerability', 'cve'].includes(t)) ||
-      name.includes('malware') || name.includes('exploit')) {
-    return 'high'
-  }
-  if (tags.some((t: string) => ['phishing', 'campaign', 'trojan'].includes(t))) {
-    return 'medium'
-  }
+      name.includes('malware') || name.includes('exploit')) return 'high'
+  if (tags.some((t: string) => ['phishing', 'campaign', 'trojan'].includes(t))) return 'medium'
   return 'low'
 }
 
 function classifyCategory(pulse: any): string {
   const tags = (pulse.tags || []).map((t: string) => t.toLowerCase())
   const name = (pulse.name || '').toLowerCase()
-
   if (tags.includes('ransomware') || name.includes('ransomware')) return 'Ransomware'
   if (tags.includes('apt') || name.includes('apt')) return 'Nation-State / APT'
   if (tags.includes('phishing') || name.includes('phishing')) return 'Phishing'
@@ -37,11 +27,9 @@ function classifyCategory(pulse: any): string {
 }
 
 function extractCVEs(pulse: any): string[] {
-  const cves: string[] = []
   const text = `${pulse.name} ${pulse.description} ${(pulse.tags || []).join(' ')}`
   const matches = text.match(/CVE-\d{4}-\d{4,}/gi)
-  if (matches) cves.push(...matches.map((c: string) => c.toUpperCase()))
-  return [...new Set(cves)]
+  return matches ? [...new Set(matches.map((c: string) => c.toUpperCase()))] : []
 }
 
 function inferRegion(pulse: any): string {
@@ -49,7 +37,7 @@ function inferRegion(pulse: any): string {
   if (text.includes('germany') || text.includes('german') || text.includes('dach') || text.includes('deutsch')) return 'DACH'
   if (text.includes('europe') || text.includes('eu ') || text.includes('european')) return 'EU-wide'
   if (text.includes('nordic') || text.includes('scandinav')) return 'Nordics'
-  if (text.includes('uk') || text.includes('britain') || text.includes('british')) return 'UK'
+  if (text.includes('uk') || text.includes('britain')) return 'UK'
   return 'Global'
 }
 
@@ -60,28 +48,27 @@ function inferIndustry(pulse: any): string {
   if (text.includes('health') || text.includes('hospital') || text.includes('medical')) return 'Healthcare'
   if (text.includes('manufactur') || text.includes('industrial') || text.includes('ot ') || text.includes('scada')) return 'Manufacturing'
   if (text.includes('government') || text.includes('defense') || text.includes('military')) return 'Government & Defense'
-  if (text.includes('telecom') || text.includes('transport')) return 'Critical Infrastructure'
   return 'Cross-sector'
+}
+
+function getDateNDaysAgo(n: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return d.toISOString().split('T')[0]
 }
 
 export async function GET() {
   try {
-    // Fetch recent pulses from AlienVault OTX (public endpoint, no key needed)
-    const response = await fetch(`${OTX_BASE}/pulses/subscribed?limit=20&page=1&modified_since=${getDateNDaysAgo(14)}`, {
-      headers: { 'Accept': 'application/json' },
-      next: { revalidate: 3600 }, // Cache for 1 hour
-    })
-
-    // If OTX subscription endpoint fails (needs auth), fall back to activity feed
     let pulses: any[] = []
 
-    if (!response.ok) {
-      // Try the public activity endpoint instead
-      const activityResponse = await fetch(`${OTX_BASE}/pulses/activity?limit=20&page=1`, {
-        headers: { 'Accept': 'application/json' },
-        next: { revalidate: 3600 },
-      })
+    const response = await fetch(`${OTX_BASE}/pulses/subscribed?limit=20&page=1&modified_since=${getDateNDaysAgo(14)}`, {
+      headers: { Accept: 'application/json' },
+    })
 
+    if (!response.ok) {
+      const activityResponse = await fetch(`${OTX_BASE}/pulses/activity?limit=20&page=1`, {
+        headers: { Accept: 'application/json' },
+      })
       if (activityResponse.ok) {
         const data = await activityResponse.json()
         pulses = data.results || []
@@ -92,15 +79,38 @@ export async function GET() {
     }
 
     if (pulses.length === 0) {
-      // Return demo data when API isn't available
+      // Try DB cache before demo data
+      const cached = await getRecentThreats(15)
+      if (cached.length > 0) {
+        return NextResponse.json({
+          threats: cached.map(t => ({
+            id: t.id,
+            title: t.title,
+            description: t.description,
+            severity: t.severity,
+            category: t.category,
+            source: t.source,
+            publishedAt: t.publishedAt.toISOString(),
+            tags: t.tags,
+            cves: t.cves,
+            region: t.region,
+            affectedIndustry: t.affectedIndustry,
+            url: t.url,
+          })),
+          source: 'database-cache',
+          lastUpdated: new Date().toISOString(),
+        }, {
+          headers: { 'Cache-Control': 's-maxage=3600, stale-while-revalidate=600' },
+        })
+      }
+
       return NextResponse.json({
         threats: getDemoThreats(),
         source: 'demo',
-        lastUpdated: new Date().toISOString()
+        lastUpdated: new Date().toISOString(),
       })
     }
 
-    // Transform OTX pulses into our ThreatPulse format
     const threats = pulses.slice(0, 15).map((pulse: any) => ({
       id: pulse.id || `pulse-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       title: pulse.name || 'Unknown Threat',
@@ -116,10 +126,22 @@ export async function GET() {
       url: `https://otx.alienvault.com/pulse/${pulse.id}`,
     }))
 
+    // Persist to DB (fire-and-forget)
+    upsertThreats(threats).catch(err => console.error('DB upsert error:', err))
+
+    // Trigger notifications for critical/high threats (fire-and-forget)
+    for (const threat of threats) {
+      if (threat.severity === 'critical' || threat.severity === 'high') {
+        triggerNotifications(threat).catch(err => console.error('Notification error:', err))
+      }
+    }
+
     return NextResponse.json({
       threats,
       source: 'otx-live',
       lastUpdated: new Date().toISOString(),
+    }, {
+      headers: { 'Cache-Control': 's-maxage=3600, stale-while-revalidate=600' },
     })
   } catch (error) {
     console.error('Threat feed error:', error)
@@ -129,12 +151,6 @@ export async function GET() {
       lastUpdated: new Date().toISOString(),
     })
   }
-}
-
-function getDateNDaysAgo(n: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() - n)
-  return d.toISOString().split('T')[0]
 }
 
 function getDemoThreats() {
@@ -167,7 +183,7 @@ function getDemoThreats() {
     },
     {
       id: 'demo-3',
-      title: 'NIS2 Enforcement Wave — Commission Acts Against 4 Member States',
+      title: 'NIS2 Enforcement Wave \u2014 Commission Acts Against 4 Member States',
       description: 'European Commission launches infringement proceedings for inadequate NIS2 transposition, signaling real regulatory enforcement across essential entities.',
       severity: 'high',
       category: 'Regulatory',
